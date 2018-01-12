@@ -85,6 +85,8 @@ func initVips() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
+	log.Print("vips version ", C.GoString(C.vips_version_string()))
+
 	if err := C.vips_initialize(); err != 0 {
 		C.vips_shutdown()
 		log.Fatalln("unable to start vips!")
