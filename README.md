@@ -229,7 +229,11 @@ imgproxy supports only the most popular image formats of the moment: PNG, JPEG, 
 
 ## Deployment
 
-There is a special endpoint `/health`, which returns HTTP Status `200 OK` after server successfully starts. This can be used to check container readiness.   
+There is a special endpoint `/health`, which returns HTTP Status `200 OK` after server successfully starts. This can be used to check container readiness.
+
+## Monitoring
+
+Endpoint `/stats` returns a json with request success/fail counts at different processing stages.
 
 ## Author
 

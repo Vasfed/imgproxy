@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -92,12 +93,16 @@ func parsePath(r *http.Request) (string, processingOptions, error) {
 func logResponse(status int, msg string) {
 	var color int
 
-	if status >= 500 {
-		color = 31
-	} else if status >= 400 {
-		color = 33
+	if status >= 400 {
+		stats.request.Fail()
+		if status >= 500 {
+			color = 31
+		} else {
+			color = 33
+		}
 	} else {
 		color = 32
+		stats.request.Success()
 	}
 
 	log.Printf("|\033[7;%dm %d \033[0m| %s\n", color, status, msg)
@@ -115,14 +120,23 @@ func respondWithImage(r *http.Request, rw http.ResponseWriter, data []byte, imgU
 
 	rw.WriteHeader(200)
 
+	stats.result.Start()
+	var err error
 	if gzipped {
 		gz, _ := gzip.NewWriterLevel(rw, conf.GZipCompression)
-		gz.Write(data)
+		_, err = gz.Write(data)
 		gz.Close()
 	} else {
-		rw.Write(data)
+		_, err = rw.Write(data)
 	}
 
+	if err != nil {
+		stats.result.Fail()
+		logResponse(499, fmt.Sprintf("Processed in %s: %s; %+v; client hangup", duration, imgURL, po))
+		return
+	}
+
+	stats.result.Success()
 	logResponse(200, fmt.Sprintf("Processed in %s: %s; %+v", duration, imgURL, po))
 }
 
@@ -153,8 +167,20 @@ func (h *httpHandler) unlock() {
 	<-h.sem
 }
 
+func (h *httpHandler) ServeStats(rw http.ResponseWriter, r *http.Request) {
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(struct {
+		*serverStatsResult
+		Mem *memStatsResult
+	}{
+		serverStatsResult: stats.Read(),
+		Mem:               stats.ReadMem(),
+	})
+}
+
 func (h *httpHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	log.Printf("GET: %s\n", r.URL.RequestURI())
+	stats.request.Start()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -176,8 +202,15 @@ func (h *httpHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Path == "/health" {
-		rw.WriteHeader(200);
-		rw.Write([]byte("imgproxy is running"));
+		stats.request.Discard()
+		rw.WriteHeader(200)
+		rw.Write([]byte("imgproxy is running"))
+		return
+	}
+
+	if r.URL.Path == "/stats" {
+		stats.request.Discard()
+		h.ServeStats(rw, r)
 		return
 	}
 
@@ -190,17 +223,23 @@ func (h *httpHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		panic(newError(404, err.Error(), "Invalid image url"))
 	}
 
+	stats.download.Start()
 	b, imgtype, err := downloadImage(imgURL)
 	if err != nil {
+		stats.download.Fail()
 		panic(newError(404, err.Error(), "Image is unreachable"))
 	}
+	stats.download.Success()
 
 	t.Check()
 
+	stats.process.Start()
 	b, err = processImage(b, imgtype, procOpt, t)
 	if err != nil {
+		stats.process.Fail()
 		panic(newError(500, err.Error(), "Error occurred while processing image"))
 	}
+	stats.process.Success()
 
 	t.Check()
 
